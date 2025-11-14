@@ -64,7 +64,7 @@
             <button id="logout">로그아웃(이 기기에서 해제)</button>
           </div>
         </div>
-        <p class="desc" style="margin-top:8px">이메일 없이 로컬 기기 기준으로 가입됩니다. 브라우저를 바꾸면 새로 가입해야 합니다.</p>
+        <p class="desc" style="margin-top:8px">이메일 없이 이름만으로 가입됩니다. 새로고침/브라우저 변경 시 다시 입력하셔야 합니다.</p>
       </section>
 
       <!-- 투표 -->
@@ -96,58 +96,44 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const OWNER_CODE = 'minwoo-1234';
 
 // 투표 항목
-const POLL_ID = 'weekday'; // 주간 초기화라 상수로 사용
+const POLL_ID = 'weekday';
 const OPTIONS = ['월','화','수','목','금','토','일'];
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-/*************** 로컬 세션 ***************/
-const LS_USER_ID = 'namedvote.user_id';
-const LS_CLIENT_ID = 'namedvote.client_id';
-function getClientId(){ let id = localStorage.getItem(LS_CLIENT_ID); if(!id){ id = (crypto?.randomUUID?.() || Math.random().toString(36).slice(2)); localStorage.setItem(LS_CLIENT_ID, id);} return id; }
-function getUserId(){ return localStorage.getItem(LS_USER_ID); }
-function setUserId(id){ localStorage.setItem(LS_USER_ID, id); }
-function clearLocal(){ localStorage.removeItem(LS_USER_ID); }
+/*************** 세션(기기 저장 없음) ***************/
+let CURRENT_USER_ID = null;  // 새로고침 시 초기화됨
 
 /*************** DOM ***************/
 const $ = (s)=>document.querySelector(s);
 function show(id, on=true){ const el = $(id); if(el) el.hidden = !on; }
 
 /*************** 부팅 ***************/
-async function boot(){
-  const uid = getUserId();
-  if(!uid){
-    $('#myname').value = '';
-    show('#vote-card', false);
-  } else {
-    // 이름 로드
-    const { data } = await sb.from('users').select('name').eq('id', uid).maybeSingle();
-    if(!data){ clearLocal(); return boot(); }
-    $('#myname').value = data.name;
-    show('#vote-card', true);
-    initVoteUI();
-  }
+function boot(){
+  // 저장소를 쓰지 않으므로 항상 가입부터 시작
+  $('#myname').value = '';
+  show('#vote-card', false);
 }
 boot();
 
-/*************** 가입/로그아웃/이름저장 ***************/
+/*************** 가입/로그아웃 ***************/
 $('#signup').addEventListener('click', async ()=>{
-  const name = $('#myname').value.trim(); 
+  const name = $('#myname').value.trim();
   if(!name) return alert('이름을 입력하세요.');
-  const clientId = getClientId();
 
-  // 같은 기기에서 중복 가입 방지
-  const { data: exist } = await sb.from('users').select('id').eq('client_id', clientId).limit(1);
-  if(exist && exist.length){ setUserId(exist[0].id); show('#vote-card', true); initVoteUI(); return; }
-
-  const { data, error } = await sb.from('users').insert({ name, client_id: clientId }).select('id').maybeSingle();
+  // 이름만으로 사용자 생성 (동명이인 허용)
+  const { data, error } = await sb.from('users').insert({ name }).select('id').maybeSingle();
   if(error) return alert('가입 오류: '+error.message);
-  setUserId(data.id);
+
+  CURRENT_USER_ID = data.id;          // 메모리 변수에만 유지
   show('#vote-card', true);
   initVoteUI();
 });
 
-$('#logout').addEventListener('click', ()=>{ clearLocal(); location.reload(); });
+$('#logout').addEventListener('click', ()=>{
+  CURRENT_USER_ID = null;
+  location.reload();
+});
 
 /*************** 투표 UI ***************/
 function initVoteUI(){
@@ -166,8 +152,8 @@ function initVoteUI(){
 }
 
 async function preloadMyChoices(){
-  const uid = getUserId(); if(!uid) return;
-  const { data } = await sb.from('votes').select('option_index').eq('poll_id', POLL_ID).eq('user_id', uid);
+  if(!CURRENT_USER_ID) return;
+  const { data } = await sb.from('votes').select('option_index').eq('poll_id', POLL_ID).eq('user_id', CURRENT_USER_ID);
   const set = new Set((data||[]).map(r=>r.option_index));
   OPTIONS.forEach((_, idx)=>{ const el = document.getElementById(`opt-${idx}`); if(el) el.checked = set.has(idx); });
 }
@@ -176,12 +162,12 @@ async function onSubmit(e){
   e.preventDefault();
   const selected = Array.from(document.querySelectorAll('#options input[type=checkbox]:checked')).map(el=>Number(el.value));
   if(!selected.length){ alert('최소 1개 이상 선택하세요.'); $('#vote-form').addEventListener('submit', onSubmit, { once:true }); return; }
-  const uid = getUserId(); if(!uid) return alert('가입이 필요합니다.');
+  if(!CURRENT_USER_ID) return alert('가입이 필요합니다.');
 
   // 기존 표 삭제 후 재삽입
-  let { error: e1 } = await sb.from('votes').delete().eq('poll_id', POLL_ID).eq('user_id', uid);
+  let { error: e1 } = await sb.from('votes').delete().eq('poll_id', POLL_ID).eq('user_id', CURRENT_USER_ID);
   if(e1){ alert('초기화 오류: '+e1.message); $('#vote-form').addEventListener('submit', onSubmit, { once:true }); return; }
-  const rows = selected.map(i=>({ poll_id: POLL_ID, option_index: i, user_id: uid }));
+  const rows = selected.map(i=>({ poll_id: POLL_ID, option_index: i, user_id: CURRENT_USER_ID }));
   let { error: e2 } = await sb.from('votes').insert(rows);
   if(e2){ alert('저장 오류: '+e2.message); $('#vote-form').addEventListener('submit', onSubmit, { once:true }); return; }
   alert('반영되었습니다.');
@@ -190,7 +176,7 @@ async function onSubmit(e){
 }
 
 async function renderResults(){
-  const uid = getUserId();
+  const uid = CURRENT_USER_ID;
   const [agg, named] = await Promise.all([
     sb.from('votes_agg').select('option_index, count').eq('poll_id', POLL_ID),
     sb.from('votes_named').select('option_index, name, user_id').eq('poll_id', POLL_ID)
